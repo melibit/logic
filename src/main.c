@@ -5,230 +5,229 @@
 #include <math.h>
 #include <time.h>
 
-  long long millis(void) {
-      struct timeval tv;
+long long millis(void) {
+  struct timeval tv;
 
-      mingw_gettimeofday(&tv,NULL);
-      return (((long long)tv.tv_sec)*1000)+(tv.tv_usec/1000);
-  }
+  mingw_gettimeofday(&tv,NULL);
+  return (((long long)tv.tv_sec)*1000)+(tv.tv_usec/1000);
+}
 
 #include <stdbool.h>
 
-  typedef float      f32;
-  typedef double     f64;
-  typedef int32_t    i32;
-  typedef int64_t    i64;
-  typedef uint32_t   u32;
-  typedef uint64_t   u64;
-  typedef size_t   usize;
-  typedef ssize_t  isize;
+typedef float      f32;
+typedef double     f64;
+typedef int32_t    i32;
+typedef int64_t    i64;
+typedef uint32_t   u32;
+typedef uint64_t   u64;
+typedef size_t   usize;
+typedef ssize_t  isize;
 
 #define SCREEN_WIDTH 2160
 #define SCREEN_HEIGHT 1440
 #define GRID_SIZE 1
 #define WINDOW_SCALE 1
 
-  typedef struct v2  { f64 x, y; } v2;
-  typedef struct v2i { i64 x, y; } v2i;
+typedef struct v2  { f64 x, y; } v2;
+typedef struct v2i { i64 x, y; } v2i;
 
-  static inline v2i v2_to_v2i (v2 v) {
-    return (v2i){(i64)v.x, (i64)v.y};
-  }
+static inline v2i v2_to_v2i (v2 v) {
+  return (v2i){(i64)v.x, (i64)v.y};
+}
 
-  static inline v2 scale_v2 (v2 v, f64 sf) {
-    return (v2) {v.x * sf, v.y * sf};
-  }
+static inline v2 scale_v2 (v2 v, f64 sf) {
+  return (v2) {v.x * sf, v.y * sf};
+}
 
-  static inline v2 translate_v2 (v2 v, v2 u) {
-    return (v2) {v.x + u.x, v.y + u.y};
-  }
+static inline v2 translate_v2 (v2 v, v2 u) {
+  return (v2) {v.x + u.x, v.y + u.y};
+}
 
-  struct curve { // Quadratic Bezier
-    v2 from;
-    v2 to;
-    v2 control;
-  };
+struct curve { // Quadratic Bezier
+  v2 from;
+  v2 to;
+  v2 control;
+};
 
-  struct shape {
-    struct curve *curves;
-    usize n;
-  };
+struct shape {
+  struct curve *curves;
+  usize n;
+};
 
-  struct object {
-    struct shape *shape;
-    f64 scale;
-    u32 colour;
-    struct v2 pos;
-
-    struct {
-      v2 min;
-      v2 max;
-    } bbox;
-  };
-
-  static void precalculate_bbox(struct object* o) {
-    o->bbox.min = (v2) {INFINITY, INFINITY};
-    o->bbox.max = (v2) {-INFINITY, -INFINITY};
-
-    for (usize i = 0; i <= o->shape->n; i++) {
-      const struct curve c = o->shape->curves[i];
-      const v2 to      = translate_v2(scale_v2(c.to     , o->scale), o->pos),
-               from    = translate_v2(scale_v2(c.from   , o->scale), o->pos),
-               control = translate_v2(scale_v2(c.control, o->scale), o->pos);
-
-      for (f64 t = 0; t <= 1; t += 0.01) {
-        const v2 p = translate_v2(translate_v2(control, scale_v2(translate_v2(from, scale_v2(control, -1)),(1-t)*(1-t))), scale_v2(translate_v2(to, scale_v2(control, -1)),t*t));
-        if (p.x > o->bbox.max.x)
-          o->bbox.max.x = p.x;
-        if (p.x < o->bbox.min.x)
-          o->bbox.min.x = p.x;
-        if (p.y > o->bbox.max.y)
-          o->bbox.max.y = p.y;
-        if (p.y < o->bbox.min.y)
-          o->bbox.min.y = p.y;
-      }
-    }
-  }
+struct object {
+  struct shape *shape;
+  f64 scale;
+  u32 colour;
+  struct v2 pos;
 
   struct {
-    SDL_Window *window;
-    SDL_Texture *texture;
-    SDL_Renderer *renderer;
-    u32 *pixels;
-    bool quit;
+    v2 min;
+    v2 max;
+  } bbox;
+};
 
-    struct {
-      f64 scale;
-      v2 pos;
-      v2 pointer;
-    } camera;
+static void precalculate_bbox(struct object* o) {
+  o->bbox.min = (v2) {INFINITY, INFINITY};
+  o->bbox.max = (v2) {-INFINITY, -INFINITY};
 
-    struct {
-      struct object *objects;
-      usize n;
-      usize max;
-    } objects;
-  } state;
+  for (usize i = 0; i <= o->shape->n; i++) {
+    const struct curve c = o->shape->curves[i];
+    const v2 to      = translate_v2(scale_v2(c.to     , o->scale), o->pos),
+             from    = translate_v2(scale_v2(c.from   , o->scale), o->pos),
+             control = translate_v2(scale_v2(c.control, o->scale), o->pos);
 
-  static inline v2 from_screen(v2i pos) {
-    return (v2) {state.camera.pos.x + (pos.x - SCREEN_WIDTH  / 2) / state.camera.scale, 
-                 state.camera.pos.y + (pos.y - SCREEN_HEIGHT / 2) / state.camera.scale};
-  }
-
-  static inline v2i to_screen (v2 pos) {
-    return v2_to_v2i((v2){( pos.x - state.camera.pos.x) * state.camera.scale + SCREEN_WIDTH  / 2,
-                          ( pos.y - state.camera.pos.y) * state.camera.scale + SCREEN_HEIGHT / 2});
-  }
-
-  static inline void update_pointer() {
-    f32 x, y;
-    SDL_GetMouseState(&x, &y);
-    state.camera.pointer = from_screen((v2i){(i32)x, (i32)SCREEN_HEIGHT - y});
-  }
-
-  static inline bool point_in_screen(v2i v) {
-    if (v.y < SCREEN_HEIGHT && v.x < SCREEN_WIDTH && v.y >= 0 && v.x >= 0)
-      return true;
-    return false;
-  }
-
-  static inline void draw_pixel(v2i v, u32 colour) {
-    if (point_in_screen(v))
-      state.pixels[v.y * SCREEN_WIDTH + v.x] = colour;
-  } 
-
-  // DDA (update to Bresenham for time save?)
-  static inline void draw_line(v2i a, v2i b, u32 colour) {
-    i32 dx = b.x - a.x, 
-        dy = b.y - a.y;
-    u32 steps = abs(dx) > abs(dy) ? abs(dx) : abs(dy);
-    f32 xstep = (f32)dx / (f32)steps,
-        ystep = (f32)dy / (f32)steps;
-    f32 x = a.x, y = a.y;
-    for (u32 i=0; i < steps; i++) {
-      x += xstep;
-      y += ystep;
-      draw_pixel(v2_to_v2i((v2) {x, y}), colour);
-    }
-  }
-  static inline void draw_curve(struct curve c, f64 scale, v2 translate, u32 colour) {
-    const v2 to      = translate_v2(scale_v2(c.to     , scale), translate),
-             from    = translate_v2(scale_v2(c.from   , scale), translate),
-             control = translate_v2(scale_v2(c.control, scale), translate);
-    for (f64 t = 0; t <= 1; t += .5 / state.camera.scale) {
+    for (f64 t = 0; t <= 1; t += 0.01) {
       const v2 p = translate_v2(translate_v2(control, scale_v2(translate_v2(from, scale_v2(control, -1)),(1-t)*(1-t))), scale_v2(translate_v2(to, scale_v2(control, -1)),t*t));
-      draw_pixel(to_screen(p), colour);
+      if (p.x > o->bbox.max.x)
+        o->bbox.max.x = p.x;
+      if (p.x < o->bbox.min.x)
+        o->bbox.min.x = p.x;
+      if (p.y > o->bbox.max.y)
+        o->bbox.max.y = p.y;
+      if (p.y < o->bbox.min.y)
+        o->bbox.min.y = p.y;
     }
   }
+}
 
-  static inline void draw_shape(struct shape s, f64 scale, v2 translate, u32 colour) {
-    for (usize i = 0; i < s.n; i++) 
-      draw_curve(s.curves[i], scale, translate, colour);
-  }
+struct {
+  SDL_Window *window;
+  SDL_Texture *texture;
+  SDL_Renderer *renderer;
+  u32 *pixels;
+  bool quit;
 
-  static inline bool object_in_screen(struct object o) {
-    if (to_screen(translate_v2(o.pos, o.bbox.min)).x >= SCREEN_WIDTH || to_screen(translate_v2(o.pos, o.bbox.min)).y >= SCREEN_HEIGHT) 
-      return false;
-    if (to_screen(translate_v2(o.pos, o.bbox.max)).x  < 0            || to_screen(translate_v2(o.pos, o.bbox.max)).y  < 0)
-      return false;
+  struct {
+    f64 scale;
+    v2 pos;
+    v2 pointer;
+  } camera;
+
+  struct {
+    struct object *objects;
+    usize n;
+    usize max;
+  } objects;
+} state;
+
+static inline v2 from_screen(v2i pos) {
+  return (v2) {state.camera.pos.x + (pos.x - SCREEN_WIDTH  / 2) / state.camera.scale, 
+               state.camera.pos.y + (pos.y - SCREEN_HEIGHT / 2) / state.camera.scale};
+}
+
+static inline v2i to_screen (v2 pos) {
+  return v2_to_v2i((v2){( pos.x - state.camera.pos.x) * state.camera.scale + SCREEN_WIDTH  / 2,
+                        ( pos.y - state.camera.pos.y) * state.camera.scale + SCREEN_HEIGHT / 2});
+}
+
+static inline void update_pointer() {
+  f32 x, y;
+  SDL_GetMouseState(&x, &y);
+  state.camera.pointer = from_screen((v2i){(i32)x, (i32)SCREEN_HEIGHT - y});
+}
+
+static inline bool point_in_screen(v2i v) {
+  if (v.y < SCREEN_HEIGHT && v.x < SCREEN_WIDTH && v.y >= 0 && v.x >= 0)
     return true;
-  }
+  return false;
+}
 
-  static inline bool point_in_object(struct object o, v2 p) {
-    if (p.x > translate_v2(o.pos, o.bbox.min).x && p.x < translate_v2(o.pos, o.bbox.max).x && p.y > translate_v2(o.pos, o.bbox.min).y && p.y < translate_v2(o.pos, o.bbox.max).y)
-      return true;
+static inline void draw_pixel(v2i v, u32 colour) {
+  if (point_in_screen(v))
+    state.pixels[v.y * SCREEN_WIDTH + v.x] = colour;
+} 
+
+// DDA (update to Bresenham for time save?)
+static inline void draw_line(v2i a, v2i b, u32 colour) {
+  i32 dx = b.x - a.x, 
+      dy = b.y - a.y;
+  u32 steps = abs(dx) > abs(dy) ? abs(dx) : abs(dy);
+  f32 xstep = (f32)dx / (f32)steps,
+      ystep = (f32)dy / (f32)steps;
+  f32 x = a.x, y = a.y;
+  for (u32 i=0; i < steps; i++) {
+    x += xstep;
+    y += ystep;
+    draw_pixel(v2_to_v2i((v2) {x, y}), colour);
+  }
+}
+
+static inline void draw_curve(struct curve c, f64 scale, v2 translate, u32 colour) {
+  const v2 to      = translate_v2(scale_v2(c.to     , scale), translate),
+           from    = translate_v2(scale_v2(c.from   , scale), translate),
+           control = translate_v2(scale_v2(c.control, scale), translate);
+  for (f64 t = 0; t <= 1; t += .5 / state.camera.scale) {
+    const v2 p = translate_v2(translate_v2(control, scale_v2(translate_v2(from, scale_v2(control, -1)),(1-t)*(1-t))), scale_v2(translate_v2(to, scale_v2(control, -1)),t*t));
+    draw_pixel(to_screen(p), colour);
+  }
+}
+
+static inline void draw_shape(struct shape s, f64 scale, v2 translate, u32 colour) {
+  for (usize i = 0; i < s.n; i++) 
+    draw_curve(s.curves[i], scale, translate, colour);
+}
+
+static inline bool object_in_screen(struct object o) {
+  if (to_screen(translate_v2(o.pos, o.bbox.min)).x >= SCREEN_WIDTH || to_screen(translate_v2(o.pos, o.bbox.min)).y >= SCREEN_HEIGHT) 
     return false;
-  }
+  if (to_screen(translate_v2(o.pos, o.bbox.max)).x  < 0            || to_screen(translate_v2(o.pos, o.bbox.max)).y  < 0)
+    return false;
+  return true;
+}
 
-  static inline void draw_object(struct object o) {
-    if (object_in_screen(o))
-      draw_shape(*o.shape, o.scale, o.pos, o.colour);
-  }
+static inline bool point_in_object(struct object o, v2 p) {
+  if (p.x > translate_v2(o.pos, o.bbox.min).x && p.x < translate_v2(o.pos, o.bbox.max).x && p.y > translate_v2(o.pos, o.bbox.min).y && p.y < translate_v2(o.pos, o.bbox.max).y)
+    return true;
+  return false;
+}
 
-  static void instance_object(struct object o) {
-    if (state.objects.n == state.objects.max) {
-      struct object *t = malloc(sizeof(struct object) * state.objects.max * 2);
-      memcpy(t, state.objects.objects, sizeof(struct object) * state.objects.max);
-      free(state.objects.objects);
-      state.objects.objects = t;
-      state.objects.max = state.objects.max * 2;
-    }
-    
-    state.objects.objects[state.objects.n] = o;
-    state.objects.n++;
-  }
+static inline void draw_object(struct object o) {
+  if (object_in_screen(o))
+    draw_shape(*o.shape, o.scale, o.pos, o.colour);
+}
 
-  static void destroy_object(usize n) {
-    if (n >= state.objects.n)
-      return;
-
-    struct object *t = malloc(sizeof(struct object) * state.objects.max);
-    memcpy(t, state.objects.objects, sizeof(struct object) * n);
-    memcpy(&t[n], &state.objects.objects[n + 1], sizeof(struct object) * (state.objects.max - n - 1));
+static void instance_object(struct object o) {
+  if (state.objects.n == state.objects.max) {
+    struct object *t = malloc(sizeof(struct object) * state.objects.max * 2);
+    memcpy(t, state.objects.objects, sizeof(struct object) * state.objects.max);
     free(state.objects.objects);
-    state.objects.objects = t; 
-    state.objects.n--;
+    state.objects.objects = t;
+    state.objects.max = state.objects.max * 2;
+  }  
+  state.objects.objects[state.objects.n] = o;
+  state.objects.n++;
+}
+
+static void destroy_object(usize n) {
+  if (n >= state.objects.n)
+    return;
+
+  struct object *t = malloc(sizeof(struct object) * state.objects.max);
+  memcpy(t, state.objects.objects, sizeof(struct object) * n);
+  memcpy(&t[n], &state.objects.objects[n + 1], sizeof(struct object) * (state.objects.max - n - 1));
+  free(state.objects.objects);
+  state.objects.objects = t; 
+  state.objects.n--;
+}
+
+static void render() {
+  // Draw Grid 
+  f64 grid_size = GRID_SIZE * (state.camera.scale);
+    
+  for (f64 x = fmod(state.camera.pos.x * -state.camera.scale + SCREEN_WIDTH / 2, grid_size); x < SCREEN_WIDTH; x += grid_size) {
+    draw_line((v2i){(i32)x, 0}, (v2i){(i32)x, SCREEN_HEIGHT-1}, 0xFF757070);
   }
+  for (f64 y = fmod(state.camera.pos.y * -state.camera.scale + SCREEN_HEIGHT / 2, grid_size); y < SCREEN_HEIGHT; y += grid_size) {
+    draw_line((v2i){0, (i32)y}, (v2i){SCREEN_WIDTH-1, (i32)y}, 0xFF757070);
+  }  
+  // Draw Pointer
+  draw_line((v2i){to_screen(state.camera.pointer).x - 8, to_screen(state.camera.pointer).y    },
+            (v2i){to_screen(state.camera.pointer).x + 8, to_screen(state.camera.pointer).y    }, 0xFF00FFFF);
+  draw_line((v2i){to_screen(state.camera.pointer).x    , to_screen(state.camera.pointer).y - 8},
+            (v2i){to_screen(state.camera.pointer).x    , to_screen(state.camera.pointer).y + 8}, 0xFF00FFFF);
 
-  static void render() {
-    // Draw Grid 
-    f64 grid_size = GRID_SIZE * (state.camera.scale);
-    
-    for (f64 x = fmod(state.camera.pos.x * -state.camera.scale + SCREEN_WIDTH / 2, grid_size); x < SCREEN_WIDTH; x += grid_size) {
-       draw_line((v2i){(i32)x, 0}, (v2i){(i32)x, SCREEN_HEIGHT-1}, 0xFF757070);
-    }
-    for (f64 y = fmod(state.camera.pos.y * -state.camera.scale + SCREEN_HEIGHT / 2, grid_size); y < SCREEN_HEIGHT; y += grid_size) {
-      draw_line((v2i){0, (i32)y}, (v2i){SCREEN_WIDTH-1, (i32)y}, 0xFF757070);
-    }
-    
-    // Draw Pointer
-    draw_line((v2i){to_screen(state.camera.pointer).x - 8, to_screen(state.camera.pointer).y    },
-              (v2i){to_screen(state.camera.pointer).x + 8, to_screen(state.camera.pointer).y    }, 0xFF00FFFF);
-    draw_line((v2i){to_screen(state.camera.pointer).x    , to_screen(state.camera.pointer).y - 8},
-              (v2i){to_screen(state.camera.pointer).x    , to_screen(state.camera.pointer).y + 8}, 0xFF00FFFF);
-
-    for (usize i = 0; i < state.objects.n; i++)
-      draw_object(state.objects.objects[i]);
+  for (usize i = 0; i < state.objects.n; i++)
+    draw_object(state.objects.objects[i]);
 }
 
 // https://wiki.libsdl.org/SDL3/Tutorials/FrontPage
